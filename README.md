@@ -125,5 +125,5 @@ Contributions are welcome! If you have ideas for improvement, feel free to fork 
 
 ## Contact
 
-For any issues or questions, feel free to contact me at `your-email@example.com`.
+For any issues or questions, feel free to contact me at `vinayakahr10@gmail.com`.
 
