@@ -5,150 +5,318 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 
+// =====================================================
+// LCD
+// =====================================================
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 
-const char *ssid = "YOUR_SSID";
-const char *password = "YOUR_PASSWORD";
+// =====================================================
+// WiFi Credentials (Replace with your own)
+// =====================================================
+const char *ssid = "YOUR_WIFI_SSID";
+const char *password = "YOUR_WIFI_PASSWORD";
 
-#define offset 19800
-
+// =====================================================
+// OpenWeatherMap API
+// Get your free API key:
+// https://openweathermap.org/api
+// =====================================================
 String URL = "http://api.openweathermap.org/data/2.5/weather?";
-String ApiKey = "PUT_YOUR_API_KEY_HERE";
+String ApiKey = "YOUR_OPENWEATHER_API_KEY";
 
-// PUT_YOUR_LOCATION_CREDENTIALS
+// Location Coordinates
+// Example:
+// Bengaluru:
+// lat = "12.9716";
+// lon = "77.5946";
 String lat = "YOUR_LATITUDE";
 String lon = "YOUR_LONGITUDE";
 
-const int ledPin = 2;
+// =====================================================
+// Time
+// =====================================================
+#define offset 19800   // UTC+5:30 (India)
 
-// Initialize WiFi and NTP
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "asia.pool.ntp.org", offset);
 
-void setup()
-{
-    Serial.begin(115200);
+// =====================================================
+// Status LED
+// =====================================================
+const int ledPin = 2;
 
-    lcd.init();
-    lcd.backlight();
+// =====================================================
+// Weather Update Interval
+// =====================================================
+unsigned long lastWeatherUpdate = 0;
+const unsigned long weatherInterval = 600000; // 10 minutes
 
-    pinMode(ledPin, OUTPUT);
+// =====================================================
+// Weather Data
+// =====================================================
+String weatherDesc = "--";
+float temperature = 0;
+int humidity = 0;
+String cityName = "Loading...";
+
+// =====================================================
+// Sanitize string for LCD
+// =====================================================
+String sanitizeForLCD(String input) {
+  String result = "";
+
+  for (int i = 0; i < input.length(); i++) {
+    char c = input[i];
+
+    if (c >= 32 && c <= 126)
+      result += c;
+  }
+
+  return result;
+}
+
+// =====================================================
+// WiFi Reconnect
+// =====================================================
+void checkWiFi() {
+
+  if (WiFi.status() != WL_CONNECTED) {
+
+    lcd.clear();
+    lcd.setCursor(0, 1);
+    lcd.print("Reconnecting WiFi");
 
     WiFi.begin(ssid, password);
 
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        delay(500);
-        Serial.print("WiFi Connecting...");
-        lcd.setCursor(1, 2);
-        lcd.print("WiFi Connecting...");
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
     }
 
-    Serial.println("");
-    Serial.println("WiFi connected.");
-    Serial.println("IP address: ");
-    Serial.println(WiFi.localIP());
-
     lcd.clear();
-    lcd.setCursor(1, 2);
-    lcd.print("WiFi Connected.");
-    delay(2000);
-
-    timeClient.begin();
-
-    lcd.clear();
-    lcd.setCursor(1, 1);
-    lcd.print("WEATHER STATION");
-    lcd.setCursor(4, 2);
-    lcd.print("SRINGERI, IN");
+    lcd.setCursor(0, 1);
+    lcd.print("WiFi Connected");
+    delay(1000);
+  }
 }
 
-void loop()
-{
-    lcd.noCursor();
-    lcd.noBlink();
-    timeClient.update();
-    time_t epochTime = timeClient.getEpochTime();
-    struct tm *ptm = gmtime((time_t *)&epochTime);
-    String formattedTime = timeClient.getFormattedTime();
+// =====================================================
+// Get Weather Data
+// =====================================================
+void getWeatherData() {
 
-    // Display date and time
-    int monthDay = ptm->tm_mday;
-    int currentMonth = ptm->tm_mon + 1;
-    int currentYear = ptm->tm_year + 1900;
-    String currentDate = String(monthDay) + "/" + String(currentMonth) + "/" + String(currentYear);
+  if (WiFi.status() == WL_CONNECTED) {
 
-    // Determine day of the week
-    String weekDays[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-    String dayName = weekDays[ptm->tm_wday];
+    digitalWrite(ledPin, HIGH);
 
-    // Determine AM/PM
-    int hours = ptm->tm_hour;
-    String ampm = (hours >= 12) ? "PM" : "AM";
-    if (hours > 12)
-    {
-        hours -= 12;
+    lcd.setCursor(0, 3);
+    lcd.print("Updating...        ");
+
+    HTTPClient http;
+
+    String fullURL =
+      URL +
+      "lat=" + lat +
+      "&lon=" + lon +
+      "&units=metric&appid=" + ApiKey;
+
+    http.begin(fullURL);
+
+    int httpCode = http.GET();
+
+    if (httpCode > 0) {
+
+      String payload = http.getString();
+
+      StaticJsonDocument<1024> doc;
+
+      DeserializationError error = deserializeJson(doc, payload);
+
+      if (!error) {
+
+        weatherDesc =
+            sanitizeForLCD(doc["weather"][0]["description"].as<String>());
+
+        temperature = doc["main"]["temp"];
+        humidity = doc["main"]["humidity"];
+
+        cityName =
+            sanitizeForLCD(doc["name"].as<String>());
+
+      } else {
+
+        weatherDesc = "JSON Error";
+      }
+
+    } else {
+
+      weatherDesc = "HTTP Error";
     }
-    else if (hours == 0)
-    {
-        hours = 12;
-    }
-    String displayTime = String(hours) + formattedTime.substring(2);
 
-    if (WiFi.status() == WL_CONNECTED)
-    {
-        digitalWrite(ledPin, HIGH);
+    http.end();
 
-        HTTPClient http;
+    digitalWrite(ledPin, LOW);
+  }
+}
 
-        // Set HTTP Request Final URL with Location and API key information
-        http.begin(URL + "lat=" + lat + "&lon=" + lon + "&units=metric&appid=" + ApiKey);
+// =====================================================
+// Update Time
+// =====================================================
+void updateTime(String &dateStr,
+                String &timeStr,
+                String &dayStr,
+                String &ampm) {
 
-        // Start connection and send HTTP Request
-        int httpCode = http.GET();
+  timeClient.update();
 
-        if (httpCode > 0)
-        {
-            String JSON_Data = http.getString();
-            Serial.println(JSON_Data);
+  time_t epochTime = timeClient.getEpochTime();
 
-            DynamicJsonDocument doc(2048);
-            deserializeJson(doc, JSON_Data);
-            JsonObject obj = doc.as<JsonObject>();
+  struct tm *ptm = gmtime((time_t *)&epochTime);
 
-            const char *description = obj["weather"][0]["description"];
-            const float temp = obj["main"]["temp"];
-            const int humidity = obj["main"]["humidity"];
+  int day = ptm->tm_mday;
+  int month = ptm->tm_mon + 1;
+  int year = ptm->tm_year + 1900;
 
-            lcd.clear();
-            lcd.setCursor(0, 0);
-            lcd.print("DATE: " + currentDate);
-            lcd.setCursor(16, 0);
-            lcd.print(dayName);
+  dateStr = String(day) + "/" +
+            String(month) + "/" +
+            String(year);
 
-            lcd.setCursor(0, 1);
-            lcd.print("TIME: " + displayTime);
-            lcd.setCursor(14, 1);
-            lcd.print(ampm);
+  String weekDays[7] =
+  {
+    "Sun","Mon","Tue",
+    "Wed","Thu","Fri","Sat"
+  };
 
-            lcd.setCursor(0, 2);
-            lcd.print(description);
-            lcd.setCursor(0, 3);
-            lcd.print("Temp:");
-            lcd.print(temp);
-            lcd.write(0xDF); // °C symbol
-            lcd.print("C");
-            lcd.print(" Hum:");
-            lcd.print(humidity);
-            lcd.print("%");
-        }
-        else
-        {
-            Serial.println("Error!");
-            lcd.clear();
-            lcd.print("Can't Get DATA!");
-        }
-        http.end();
-    }
-    delay(1000);
+  dayStr = weekDays[ptm->tm_wday];
+
+  int hours = ptm->tm_hour;
+
+  ampm = (hours >= 12) ? "PM" : "AM";
+
+  hours %= 12;
+
+  if (hours == 0)
+    hours = 12;
+
+  String minutesSeconds =
+      timeClient.getFormattedTime().substring(2);
+
+  timeStr = String(hours) + minutesSeconds;
+}
+
+// =====================================================
+// Display Data
+// =====================================================
+void displayData() {
+
+  String dateStr;
+  String timeStr;
+  String dayStr;
+  String ampm;
+
+  updateTime(dateStr, timeStr, dayStr, ampm);
+
+  String day = dayStr.substring(0, 3);
+
+  int maxCity = 20 - 1 - day.length();
+
+  String city = cityName.substring(0, maxCity);
+
+  // Line 1
+  lcd.setCursor(0, 0);
+  lcd.print("                    ");
+
+  lcd.setCursor(0, 0);
+  lcd.print(city);
+
+  lcd.setCursor(20 - day.length(), 0);
+  lcd.print(day);
+
+  // Line 2
+  lcd.setCursor(0, 1);
+  lcd.print("                    ");
+
+  lcd.setCursor(0, 1);
+  lcd.print("DATE: " + dateStr);
+
+  // Line 3
+  lcd.setCursor(0, 2);
+  lcd.print("                    ");
+
+  lcd.setCursor(0, 2);
+  lcd.print("TIME: " + timeStr + " " + ampm);
+
+  // Line 4
+  lcd.setCursor(0, 3);
+  lcd.print("                    ");
+
+  lcd.setCursor(0, 3);
+
+  if (weatherDesc == "--") {
+
+    lcd.print("Fetching data...");
+    return;
+  }
+
+  lcd.print(weatherDesc.substring(0, 8));
+  lcd.print(" ");
+
+  lcd.print(temperature, 1);
+  lcd.print((char)223);
+  lcd.print("C ");
+
+  lcd.print(humidity);
+  lcd.print("%");
+}
+
+// =====================================================
+// Setup
+// =====================================================
+void setup() {
+
+  Serial.begin(115200);
+
+  lcd.init();
+  lcd.backlight();
+
+  pinMode(ledPin, OUTPUT);
+
+  lcd.setCursor(0, 1);
+  lcd.print("Connecting WiFi");
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+  }
+
+  lcd.clear();
+
+  lcd.setCursor(0, 1);
+  lcd.print("WiFi Connected");
+
+  delay(1000);
+
+  timeClient.begin();
+
+  // Initial Weather Fetch
+  getWeatherData();
+}
+
+// =====================================================
+// Loop
+// =====================================================
+void loop() {
+
+  checkWiFi();
+
+  if (millis() - lastWeatherUpdate > weatherInterval) {
+
+    getWeatherData();
+
+    lastWeatherUpdate = millis();
+  }
+
+  displayData();
+
+  delay(1000);
 }
